@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Graphing Tool</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: Arial, sans-serif;
+    display: flex;
+    height: 100vh;
+    background: #1a1a1a;
+    color: #ddd;
+  }
+
+  #panel {
+    width: 240px;
+    padding: 12px;
+    background: #242424;
+    overflow-y: auto;
+    flex-shrink: 0;
+    border-right: 1px solid #333;
+  }
+
+  h3 {
+    font-size: 12px;
+    font-weight: 600;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin: 14px 0 5px;
+  }
+  h3:first-child { margin-top: 4px; }
+
+  textarea, input[type=text] {
+    width: 100%;
+    background: #2e2e2e;
+    border: 1px solid #3a3a3a;
+    border-radius: 5px;
+    color: #ddd;
+    font-size: 13px;
+    padding: 5px 8px;
+    font-family: monospace;
+    resize: vertical;
+  }
+  textarea:focus, input[type=text]:focus {
+    outline: none;
+    border-color: #555;
+  }
+
+  .fn-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 3px 0;
+  }
+  .fn-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .fn-row input { flex: 1; }
+
+  .range-row {
+    display: flex;
+    gap: 6px;
+    margin: 3px 0;
+  }
+  .range-row label {
+    font-size: 11px;
+    color: #666;
+    align-self: center;
+    white-space: nowrap;
+  }
+  .range-row input { flex: 1; }
+
+  .hint {
+    font-size: 10px;
+    color: #555;
+    margin-top: 5px;
+    line-height: 1.4;
+  }
+
+  button {
+    width: 100%;
+    padding: 8px;
+    margin-top: 10px;
+    background: #3a3a3a;
+    border: 1px solid #4a4a4a;
+    border-radius: 5px;
+    color: #ddd;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button:hover { background: #444; }
+  button:active { background: #333; }
+
+  #legend {
+    margin-top: 10px;
+    font-size: 11px;
+    line-height: 1.8;
+    font-family: monospace;
+  }
+
+  canvas {
+    flex: 1;
+    display: block;
+    background: #111;
+  }
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <h3>Variables</h3>
+  <textarea id="vars" rows="7">
+engine1Eff=1
+engine1Kwhkg=0.25
+engine1mass=0.1
+engine2Eff=0.2
+engine2Kwhkg=10
+engine2mass=2
+required_Kwh=3
+</textarea>
+
+  <h3>Functions</h3>
+  <div class="fn-row"><div class="fn-dot" style="background:#e24b4a"></div><input type="text" id="f1" value="(engine1Kwhkg*engine1Eff*x)/(x+engine1mass)" /></div>
+  <div class="fn-row"><div class="fn-dot" style="background:#378add"></div><input type="text" id="f2" value="(engine1Kwhkg*engine1Eff*x)/(x+engine1mass)" /></div>
+  <div class="fn-row"><div class="fn-dot" style="background:#1d9e75"></div><input type="text" id="f3" value="required_Kwh/x" /></div>
+  <div class="fn-row"><div class="fn-dot" style="background:#7f77dd"></div><input type="text" id="f4" value="engine1mass" /></div>
+  <div class="fn-row"><div class="fn-dot" style="background:#d85a30"></div><input type="text" id="f5" value="engine2mass" /></div>
+  <div class="hint">Use * for multiply: 50*x not 50x</div>
+
+  <h3>X range</h3>
+  <div class="range-row">
+    <label>min</label><input type="text" id="xmin" value="0" />
+    <label>max</label><input type="text" id="xmax" value="auto" />
+  </div>
+
+  <h3>Y range</h3>
+  <div class="range-row">
+    <label>min</label><input type="text" id="ymin" value="0" />
+    <label>max</label><input type="text" id="ymax" value="auto" />
+  </div>
+
+  <button onclick="drawGraph()">Graph</button>
+  <div id="legend"></div>
+</div>
+
+<canvas id="gc"></canvas>
+
+<script>
+const canvas = document.getElementById("gc");
+const ctx = canvas.getContext("2d");
+const COLORS = ["#e24b4a","#378add","#1d9e75","#7f77dd","#d85a30"];
+
+function parseVars(text) {
+  const v = {};
+  text.split("\n").forEach(line => {
+    const eq = line.indexOf("=");
+    if (eq > 0) {
+      const k = line.slice(0, eq).trim();
+      const val = parseFloat(line.slice(eq + 1));
+      if (k && !isNaN(val)) v[k] = val;
+    }
+  });
+  return v;
+}
+
+function makeFunc(expr) {
+  try {
+    return new Function("x", "vars", `with(vars){ with(Math){ return (${expr}); } }`);
+  } catch(e) { return null; }
+}
+
+function niceStep(range, targetTicks) {
+  if (range <= 0 || !isFinite(range)) return 1;
+  const rough = range / targetTicks;
+  const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+  const norm = rough / mag;
+  const step = norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10;
+  return step * mag;
+}
+
+function getRange(minId, maxId, autoMin, autoMax) {
+  const minRaw = document.getElementById(minId).value.trim();
+  const maxRaw = document.getElementById(maxId).value.trim();
+  const lo = (minRaw === "auto" || minRaw === "") ? autoMin : parseFloat(minRaw);
+  const hi = (maxRaw === "auto" || maxRaw === "") ? autoMax : parseFloat(maxRaw);
+  return [isNaN(lo) ? autoMin : lo, isNaN(hi) ? autoMax : hi];
+}
+
+function drawGraph() {
+  const w = canvas.width, h = canvas.height;
+  if (!w || !h) return;
+
+  const vars = parseVars(document.getElementById("vars").value);
+  const exprs = [1,2,3,4,5].map(i => document.getElementById("f"+i).value.trim());
+  const funcs = exprs.map(e => e ? makeFunc(e) : null);
+
+  const pad = { top: 24, right: 24, bottom: 38, left: 56 };
+  const plotW = w - pad.left - pad.right;
+  const plotH = h - pad.top - pad.bottom;
+  const steps = Math.max(plotW, 500);
+
+  // Auto x range: 0 to 10
+  const [xMin, xMax] = getRange("xmin", "xmax", 0, 10);
+  const xRange = xMax - xMin || 1;
+
+  // Sample to find auto y bounds
+  let yMinAuto = Infinity, yMaxAuto = -Infinity;
+  funcs.forEach(f => {
+    if (!f) return;
+    for (let i = 0; i <= steps; i++) {
+      const x = xMin + (i / steps) * xRange;
+      try {
+        const y = f(x, vars);
+        if (isFinite(y)) {
+          if (y < yMinAuto) yMinAuto = y;
+          if (y > yMaxAuto) yMaxAuto = y;
+        }
+      } catch {}
+    }
+  });
+  if (!isFinite(yMinAuto)) { yMinAuto = 0; yMaxAuto = 10; }
+  if (yMinAuto === yMaxAuto) { yMinAuto -= 1; yMaxAuto += 1; }
+
+  // Default y min = 0, y max = auto
+  let [yMin, yMax] = getRange("ymin", "ymax", 0, yMaxAuto * 1.05);
+  if (yMin === yMax) { yMax = yMin + 1; }
+  const yRange = yMax - yMin || 1;
+
+  function toCanvasX(x) { return pad.left + ((x - xMin) / xRange) * plotW; }
+  function toCanvasY(y) { return pad.top + plotH - ((y - yMin) / yRange) * plotH; }
+
+  ctx.clearRect(0, 0, w, h);
+
+  const axisColor = "#666";
+  const gridColor = "rgba(255,255,255,0.05)";
+  const zeroColor = "rgba(255,255,255,0.15)";
+  const textColor = "#888";
+
+  ctx.font = "11px Arial, sans-serif";
+
+  const xStep = niceStep(xRange, 8);
+  const yStep = niceStep(yRange, 7);
+
+  // Grid lines
+  ctx.strokeStyle = gridColor; ctx.lineWidth = 1;
+  for (let x = Math.ceil(xMin/xStep)*xStep; x <= xMax+1e-9; x += xStep) {
+    const cx = toCanvasX(x);
+    ctx.beginPath(); ctx.moveTo(cx, pad.top); ctx.lineTo(cx, pad.top+plotH); ctx.stroke();
+  }
+  for (let y = Math.ceil(yMin/yStep)*yStep; y <= yMax+1e-9; y += yStep) {
+    const cy = toCanvasY(y);
+    ctx.beginPath(); ctx.moveTo(pad.left, cy); ctx.lineTo(pad.left+plotW, cy); ctx.stroke();
+  }
+
+  // Zero lines
+  if (xMin <= 0 && 0 <= xMax) {
+    ctx.strokeStyle = zeroColor; ctx.lineWidth = 1;
+    const cx = toCanvasX(0);
+    ctx.beginPath(); ctx.moveTo(cx, pad.top); ctx.lineTo(cx, pad.top+plotH); ctx.stroke();
+  }
+  if (yMin <= 0 && 0 <= yMax) {
+    ctx.strokeStyle = zeroColor; ctx.lineWidth = 1;
+    const cy = toCanvasY(0);
+    ctx.beginPath(); ctx.moveTo(pad.left, cy); ctx.lineTo(pad.left+plotW, cy); ctx.stroke();
+  }
+
+  // Axes
+  ctx.strokeStyle = axisColor; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(pad.left, pad.top); ctx.lineTo(pad.left, pad.top+plotH);
+  ctx.moveTo(pad.left, pad.top+plotH); ctx.lineTo(pad.left+plotW, pad.top+plotH);
+  ctx.stroke();
+
+  // Tick labels
+  ctx.fillStyle = textColor;
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  for (let x = Math.ceil(xMin/xStep)*xStep; x <= xMax+1e-9; x += xStep) {
+    ctx.fillText(parseFloat(x.toFixed(8)), toCanvasX(x), pad.top+plotH+8);
+  }
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  for (let y = Math.ceil(yMin/yStep)*yStep; y <= yMax+1e-9; y += yStep) {
+    ctx.fillText(parseFloat(y.toFixed(8)), pad.left-8, toCanvasY(y));
+  }
+
+  // Clip and draw functions
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(pad.left, pad.top, plotW, plotH);
+  ctx.clip();
+
+  funcs.forEach((f, idx) => {
+    if (!f) return;
+    ctx.strokeStyle = COLORS[idx];
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    let penDown = false;
+    for (let i = 0; i <= steps; i++) {
+      const x = xMin + (i / steps) * xRange;
+      let y;
+      try { y = f(x, vars); } catch { penDown = false; continue; }
+      if (!isFinite(y)) { penDown = false; continue; }
+      const cx = toCanvasX(x);
+      const cy = toCanvasY(y);
+      if (!penDown) { ctx.moveTo(cx, cy); penDown = true; }
+      else ctx.lineTo(cx, cy);
+    }
+    ctx.stroke();
+  });
+
+  ctx.restore();
+
+  // Legend
+  document.getElementById("legend").innerHTML = exprs.map((e, i) =>
+    e ? `<span style="color:${COLORS[i]}">● f${i+1}: ${e}</span><br>` : ""
+  ).join("");
+}
+
+function resize() {
+  canvas.width = canvas.offsetWidth;
+  canvas.height = canvas.offsetHeight;
+  drawGraph();
+}
+
+window.addEventListener("resize", resize);
+resize();
+</script>
+</body>
+</html>
